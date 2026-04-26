@@ -1,0 +1,92 @@
+#!/bin/bash
+set -euo pipefail
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+check_env() {
+  : "${AWS_REGION:?AWS_REGION is not set. Run: envload <env>}"
+  : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is not set. Run: envload <env>}"
+}
+
+ecr_url() {
+  echo "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_login() {
+  check_env
+  aws ecr get-login-password --region "${AWS_REGION}" | \
+    docker login --username AWS --password-stdin "$(ecr_url)"
+}
+
+cmd_tag() {
+  check_env
+  : "${2:?Usage: myaws-ecr tag <image-id> <repository:tag>}"
+  docker tag "$1" "$(ecr_url)/$2"
+}
+
+cmd_push() {
+  check_env
+  : "${1:?Usage: myaws-ecr push <repository:tag>}"
+  docker push "$(ecr_url)/$1"
+}
+
+cmd_guide() {
+  cat <<EOF
+
+  ECR Push Guide
+  ══════════════
+
+  Prerequisites:
+    - AWS env vars loaded (run: envload <env>)
+    - Docker daemon running
+
+  Step 1 — Authenticate Docker to ECR (token valid 12h):
+    myaws-ecr login
+
+  Step 2 — Tag your local image:
+    myaws-ecr tag <image-id> <repository:tag>
+    e.g: myaws-ecr tag abc123 my-app:latest
+
+  Step 3 — Push the image:
+    myaws-ecr push <repository:tag>
+    e.g: myaws-ecr push my-app:latest
+
+  Full ECR URL pattern:
+    <account-id>.dkr.ecr.<region>.amazonaws.com/<repository:tag>
+
+  Current env:
+    AWS_ACCOUNT_ID = ${AWS_ACCOUNT_ID:-"(not set)"}
+    AWS_REGION     = ${AWS_REGION:-"(not set)"}
+
+EOF
+}
+
+cmd_help() {
+  cat <<EOF
+Usage: myaws-ecr <command> [arguments]
+
+Commands:
+  login               Authenticate Docker client to ECR (12h token)
+  tag <id> <repo:tag> Tag a local image for ECR
+  push <repo:tag>     Push a tagged image to ECR
+  guide               Step-by-step walkthrough for pushing an image
+  help                Show this message
+EOF
+}
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+
+case "${1:-help}" in
+  login) cmd_login ;;
+  tag)   shift; cmd_tag "$@" ;;
+  push)  shift; cmd_push "$@" ;;
+  guide) cmd_guide ;;
+  help)  cmd_help ;;
+  *)
+    echo "Unknown command: $1"
+    cmd_help
+    exit 1
+    ;;
+esac

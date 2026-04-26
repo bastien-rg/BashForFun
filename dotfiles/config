@@ -1,0 +1,9 @@
+Host *
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+    ForwardAgent yes
+
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/keyname
