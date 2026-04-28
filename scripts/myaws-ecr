@@ -4,8 +4,11 @@ set -euo pipefail
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 check_env() {
-  : "${AWS_REGION:?AWS_REGION is not set. Run: envload <env>}"
-  : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is not set. Run: envload <env>}"
+  : "${AWS_REGION:?AWS_REGION is not set. Run: envctl guide}"
+  : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is not set. Run: envctl guide}"
+  : "${ECS_TASK_DEFINITION:?ECS_TASK_DEFINITION is not set. Run: envctl guide}"
+  : "${ECS_CLUSTER:?ECS_CLUSTER is not set. Run: envctl guide}"
+  : "${ECS_SERVICE:?ECS_SERVICE is not set. Run: envctl guide}"
 }
 
 ecr_url() {
@@ -32,6 +35,46 @@ cmd_push() {
   docker push "$(ecr_url)/$1"
 }
 
+cmd_tagpush() {
+  check_env
+  : "${2:?Usage: myaws-ecr tagpush <image-id> <repository:tag>}"
+  docker tag "$1" "$(ecr_url)/$2"
+  docker push "$(ecr_url)/$2"
+}
+
+cmd_deploy() {
+  check_env
+  : "${1:?Usage: myaws-ecr deploy <repository:tag>}"
+
+  local image="$(ecr_url)/$1"
+
+  # Fetch, clean and update the image in one go
+  local updated_task_def
+  updated_task_def=$(aws ecs describe-task-definition \
+    --task-definition "$ECS_TASK_DEFINITION" \
+    --query 'taskDefinition' \
+    | jq --arg IMAGE "$image" \
+      'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+      | .containerDefinitions[0].image = $IMAGE')
+
+  # Register the new revision
+  local new_task_def_arn
+  new_task_def_arn=$(aws ecs register-task-definition \
+    --cli-input-json "$updated_task_def" \
+    --query 'taskDefinition.taskDefinitionArn' \
+    --output text)
+
+  echo "Registered new task definition: $new_task_def_arn"
+
+  # Update the service
+  aws ecs update-service \
+    --cluster "$ECS_CLUSTER" \
+    --service "$ECS_SERVICE" \
+    --task-definition "$new_task_def_arn"
+
+  echo "Service updated successfully"
+}
+
 cmd_guide() {
   cat <<EOF
 
@@ -39,7 +82,7 @@ cmd_guide() {
   ══════════════
 
   Prerequisites:
-    - AWS env vars loaded (run: envload <env>)
+    - AWS env vars loaded (run: envctl guide)
     - Docker daemon running
 
   Step 1 — Authenticate Docker to ECR (token valid 12h):
@@ -57,8 +100,11 @@ cmd_guide() {
     <account-id>.dkr.ecr.<region>.amazonaws.com/<repository:tag>
 
   Current env:
-    AWS_ACCOUNT_ID = ${AWS_ACCOUNT_ID:-"(not set)"}
-    AWS_REGION     = ${AWS_REGION:-"(not set)"}
+    AWS_ACCOUNT_ID      = ${AWS_ACCOUNT_ID:-"(not set)"}
+    AWS_REGION          = ${AWS_REGION:-"(not set)"}
+    ECS_TASK_DEFINITION = ${ECS_TASK_DEFINITION:-"(not set)"}
+    ECS_CLUSTER         = ${ECS_CLUSTER:-"(not set)"}
+    ECS_SERVICE         = ${ECS_SERVICE:-"(not set)"}
 
 EOF
 }
@@ -68,11 +114,13 @@ cmd_help() {
 Usage: myaws-ecr <command> [arguments]
 
 Commands:
-  login               Authenticate Docker client to ECR (12h token)
-  tag <id> <repo:tag> Tag a local image for ECR
-  push <repo:tag>     Push a tagged image to ECR
-  guide               Step-by-step walkthrough for pushing an image
-  help                Show this message
+  login                   Authenticate Docker client to ECR (12h token)
+  tag <id> <repo:tag>     Tag a local image for ECR
+  push <repo:tag>         Push a tagged image to ECR
+  tagpush <id> <repo:tag> Tag then push an image to ECR
+  deploy <repo:tag>       Deploy an image updated to ECR
+  guide                   Step-by-step walkthrough for pushing an image
+  help                    Show this message
 EOF
 }
 
@@ -82,6 +130,8 @@ case "${1:-help}" in
   login) cmd_login ;;
   tag)   shift; cmd_tag "$@" ;;
   push)  shift; cmd_push "$@" ;;
+  tagpush) shift; cmd_tagpush "$@" ;;
+  deploy) shift; cmd_deploy "$@" ;;
   guide) cmd_guide ;;
   help)  cmd_help ;;
   *)
